@@ -46,7 +46,7 @@ import (
 	"github.com/pingcap/tidb/util/testkit"
 	"github.com/pingcap/tidb/util/testleak"
 	"github.com/pingcap/tidb/util/testutil"
-	"github.com/pingcap/tipb/go-binlog"
+	binlog "github.com/pingcap/tipb/go-binlog"
 	"google.golang.org/grpc"
 )
 
@@ -100,16 +100,16 @@ func (p *mockBinlogPump) WriteBinlog(ctx context.Context, in *binlog.WriteBinlog
 	return &binlog.WriteBinlogResp{}, nil
 }
 
-type mockPump_PullBinlogsClient struct {
+type mockPumpPullBinlogsClient struct {
 	grpc.ClientStream
 }
 
-func (m mockPump_PullBinlogsClient) Recv() (*binlog.PullBinlogResp, error) {
+func (m mockPumpPullBinlogsClient) Recv() (*binlog.PullBinlogResp, error) {
 	return nil, nil
 }
 
 func (p *mockBinlogPump) PullBinlogs(ctx context.Context, in *binlog.PullBinlogReq, opts ...grpc.CallOption) (binlog.Pump_PullBinlogsClient, error) {
-	return mockPump_PullBinlogsClient{mocktikv.MockGRPCClientStream()}, nil
+	return mockPumpPullBinlogsClient{mocktikv.MockGRPCClientStream()}, nil
 }
 
 func (s *testSessionSuite) TestForCoverage(c *C) {
@@ -284,7 +284,9 @@ func (s *testSessionSuite) TestRowLock(c *C) {
 	tk2 := testkit.NewTestKitWithInit(c, s.store)
 
 	tk.MustExec("drop table if exists t")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	txn, err := tk.Se.Txn(true)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("create table t (c1 int, c2 int, c3 int)")
 	tk.MustExec("insert t values (11, 2, 3)")
 	tk.MustExec("insert t values (12, 2, 3)")
@@ -371,7 +373,9 @@ func (s *testSessionSuite) TestTxnLazyInitialize(c *C) {
 	tk.MustExec("create table t (id int)")
 
 	tk.MustExec("set @@autocommit = 0")
-	c.Assert(tk.Se.Txn(false).Valid(), IsFalse)
+	txn, err := tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustQuery("select @@tidb_current_ts").Check(testkit.Rows("0"))
 	tk.MustQuery("select @@tidb_current_ts").Check(testkit.Rows("0"))
 
@@ -387,15 +391,21 @@ func (s *testSessionSuite) TestTxnLazyInitialize(c *C) {
 
 	// Begin statement should start a new transaction.
 	tk.MustExec("begin")
-	c.Assert(tk.Se.Txn(false).Valid(), IsTrue)
+	txn, err = tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("rollback")
 
 	tk.MustExec("select * from t")
-	c.Assert(tk.Se.Txn(false).Valid(), IsTrue)
+	txn, err = tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("rollback")
 
 	tk.MustExec("insert into t values (1)")
-	c.Assert(tk.Se.Txn(false).Valid(), IsTrue)
+	txn, err = tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("rollback")
 }
 
@@ -459,6 +469,10 @@ func (s *testSessionSuite) TestGlobalVarAccessor(c *C) {
 	result = tk.MustQuery("select @@autocommit;")
 	result.Check(testkit.Rows("ON"))
 	tk.MustExec("set @@global.autocommit=1")
+
+	_, err = tk.Exec("set global time_zone = 'timezone'")
+	c.Assert(err, NotNil)
+	c.Assert(terror.ErrorEqual(err, variable.ErrUnknownTimeZone), IsTrue)
 }
 
 func (s *testSessionSuite) TestGetSysVariables(c *C) {
@@ -524,7 +538,9 @@ func (s *testSessionSuite) TestRetryCleanTxn(c *C) {
 	history.Add(0, stmt, tk.Se.GetSessionVars().StmtCtx)
 	_, err = tk.Exec("commit")
 	c.Assert(err, NotNil)
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	txn, err := tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsFalse)
 	c.Assert(tk.Se.GetSessionVars().InTxn(), IsFalse)
 }
 
@@ -599,39 +615,41 @@ func (s *testSessionSuite) TestInTrans(c *C) {
 	tk.MustExec("create table t (id BIGINT PRIMARY KEY AUTO_INCREMENT NOT NULL)")
 	tk.MustExec("insert t values ()")
 	tk.MustExec("begin")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	txn, err := tk.Se.Txn(true)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("insert t values ()")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("drop table if exists t;")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("create table t (id BIGINT PRIMARY KEY AUTO_INCREMENT NOT NULL)")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("insert t values ()")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("commit")
 	tk.MustExec("insert t values ()")
 
 	tk.MustExec("set autocommit=0")
 	tk.MustExec("begin")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("insert t values ()")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("commit")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("insert t values ()")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("commit")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 
 	tk.MustExec("set autocommit=1")
 	tk.MustExec("drop table if exists t")
 	tk.MustExec("create table t (id BIGINT PRIMARY KEY AUTO_INCREMENT NOT NULL)")
 	tk.MustExec("begin")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("insert t values ()")
-	c.Assert(tk.Se.Txn(true).Valid(), IsTrue)
+	c.Assert(txn.Valid(), IsTrue)
 	tk.MustExec("rollback")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	c.Assert(txn.Valid(), IsFalse)
 }
 
 func (s *testSessionSuite) TestRetryPreparedStmt(c *C) {
@@ -640,7 +658,9 @@ func (s *testSessionSuite) TestRetryPreparedStmt(c *C) {
 	tk2 := testkit.NewTestKitWithInit(c, s.store)
 
 	tk.MustExec("drop table if exists t")
-	c.Assert(tk.Se.Txn(true).Valid(), IsFalse)
+	txn, err := tk.Se.Txn(true)
+	c.Assert(err, IsNil)
+	c.Assert(txn.Valid(), IsFalse)
 	tk.MustExec("create table t (c1 int, c2 int, c3 int)")
 	tk.MustExec("insert t values (11, 2, 3)")
 
@@ -1108,10 +1128,10 @@ func (s *testSessionSuite) TestResultType(c *C) {
 	tk := testkit.NewTestKitWithInit(c, s.store)
 	rs, err := tk.Exec(`select cast(null as char(30))`)
 	c.Assert(err, IsNil)
-	chk := rs.NewChunk()
-	err = rs.Next(context.Background(), chk)
+	req := rs.NewRecordBatch()
+	err = rs.Next(context.Background(), req)
 	c.Assert(err, IsNil)
-	c.Assert(chk.GetRow(0).IsNull(0), IsTrue)
+	c.Assert(req.GetRow(0).IsNull(0), IsTrue)
 	c.Assert(rs.Fields()[0].Column.FieldType.Tp, Equals, mysql.TypeVarString)
 }
 
@@ -1483,7 +1503,7 @@ func (s *testSessionSuite) TestUnique(c *C) {
 	tk.MustExec("begin;")
 	tk.MustExec("insert into test(id, val) values(20, 6);")
 	tk.MustExec("commit;")
-	_, err = tk1.Exec("commit")
+	tk1.Exec("commit")
 	tk1.MustExec("insert into test(id, val) values(5, 5);")
 
 	tk.MustExec("drop table test;")
@@ -1495,7 +1515,7 @@ func (s *testSessionSuite) TestUnique(c *C) {
 		);`)
 	tk.MustExec("insert into test(id, val1, val2) values(1, 1, 1);")
 	tk.MustExec("insert into test(id, val1, val2) values(2, 2, 2);")
-	_, err = tk.Exec("update test set val1 = 3, val2 = 2 where id = 1;")
+	tk.Exec("update test set val1 = 3, val2 = 2 where id = 1;")
 	tk.MustExec("insert into test(id, val1, val2) values(3, 3, 3);")
 }
 
@@ -1804,7 +1824,7 @@ func (s *testSchemaSuite) TestRetrySchemaChange(c *C) {
 
 	run := false
 	hook := func() {
-		if run == false {
+		if !run {
 			tk.MustExec("update t set b = 3 where a = 1")
 			run = true
 		}
@@ -1851,30 +1871,31 @@ func (s *testSchemaSuite) TestTableReaderChunk(c *C) {
 	s.cluster.SplitTable(s.mvccStore, tbl.Meta().ID, 10)
 
 	tk.Se.GetSessionVars().DistSQLScanConcurrency = 1
-	tk.MustExec("set tidb_max_chunk_size = 2")
+	tk.MustExec("set tidb_init_chunk_size = 2")
 	defer func() {
-		tk.MustExec(fmt.Sprintf("set tidb_max_chunk_size = %d", variable.DefMaxChunkSize))
+		tk.MustExec(fmt.Sprintf("set tidb_init_chunk_size = %d", variable.DefInitChunkSize))
 	}()
 	rs, err := tk.Exec("select * from chk")
 	c.Assert(err, IsNil)
-	chk := rs.NewChunk()
+	req := rs.NewRecordBatch()
 	var count int
 	var numChunks int
 	for {
-		err = rs.Next(context.TODO(), chk)
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
-		numRows := chk.NumRows()
+		numRows := req.NumRows()
 		if numRows == 0 {
 			break
 		}
 		for i := 0; i < numRows; i++ {
-			c.Assert(chk.GetRow(i).GetInt64(0), Equals, int64(count))
+			c.Assert(req.GetRow(i).GetInt64(0), Equals, int64(count))
 			count++
 		}
 		numChunks++
 	}
 	c.Assert(count, Equals, 100)
-	c.Assert(numChunks, Equals, 50)
+	// FIXME: revert this result to new group value after distsql can handle initChunkSize.
+	c.Assert(numChunks, Equals, 1)
 	rs.Close()
 }
 
@@ -1893,15 +1914,15 @@ func (s *testSchemaSuite) TestInsertExecChunk(c *C) {
 	c.Assert(err, IsNil)
 	var idx int
 	for {
-		chk := rs.NewChunk()
-		err = rs.Next(context.TODO(), chk)
+		req := rs.NewRecordBatch()
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
-		if chk.NumRows() == 0 {
+		if req.NumRows() == 0 {
 			break
 		}
 
-		for rowIdx := 0; rowIdx < chk.NumRows(); rowIdx++ {
-			row := chk.GetRow(rowIdx)
+		for rowIdx := 0; rowIdx < req.NumRows(); rowIdx++ {
+			row := req.GetRow(rowIdx)
 			c.Assert(row.GetInt64(0), Equals, int64(idx))
 			idx++
 		}
@@ -1927,15 +1948,15 @@ func (s *testSchemaSuite) TestUpdateExecChunk(c *C) {
 	c.Assert(err, IsNil)
 	var idx int
 	for {
-		chk := rs.NewChunk()
-		err = rs.Next(context.TODO(), chk)
+		req := rs.NewRecordBatch()
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
-		if chk.NumRows() == 0 {
+		if req.NumRows() == 0 {
 			break
 		}
 
-		for rowIdx := 0; rowIdx < chk.NumRows(); rowIdx++ {
-			row := chk.GetRow(rowIdx)
+		for rowIdx := 0; rowIdx < req.NumRows(); rowIdx++ {
+			row := req.GetRow(rowIdx)
 			c.Assert(row.GetInt64(0), Equals, int64(idx+100))
 			idx++
 		}
@@ -1962,12 +1983,12 @@ func (s *testSchemaSuite) TestDeleteExecChunk(c *C) {
 	rs, err := tk.Exec("select * from chk")
 	c.Assert(err, IsNil)
 
-	chk := rs.NewChunk()
-	err = rs.Next(context.TODO(), chk)
+	req := rs.NewRecordBatch()
+	err = rs.Next(context.TODO(), req)
 	c.Assert(err, IsNil)
-	c.Assert(chk.NumRows(), Equals, 1)
+	c.Assert(req.NumRows(), Equals, 1)
 
-	row := chk.GetRow(0)
+	row := req.GetRow(0)
 	c.Assert(row.GetInt64(0), Equals, int64(99))
 	rs.Close()
 }
@@ -1994,16 +2015,16 @@ func (s *testSchemaSuite) TestDeleteMultiTableExecChunk(c *C) {
 
 	var idx int
 	for {
-		chk := rs.NewChunk()
-		err = rs.Next(context.TODO(), chk)
+		req := rs.NewRecordBatch()
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
 
-		if chk.NumRows() == 0 {
+		if req.NumRows() == 0 {
 			break
 		}
 
-		for i := 0; i < chk.NumRows(); i++ {
-			row := chk.GetRow(i)
+		for i := 0; i < req.NumRows(); i++ {
+			row := req.GetRow(i)
 			c.Assert(row.GetInt64(0), Equals, int64(idx+50))
 			idx++
 		}
@@ -2014,10 +2035,10 @@ func (s *testSchemaSuite) TestDeleteMultiTableExecChunk(c *C) {
 	rs, err = tk.Exec("select * from chk2")
 	c.Assert(err, IsNil)
 
-	chk := rs.NewChunk()
-	err = rs.Next(context.TODO(), chk)
+	req := rs.NewRecordBatch()
+	err = rs.Next(context.TODO(), req)
 	c.Assert(err, IsNil)
-	c.Assert(chk.NumRows(), Equals, 0)
+	c.Assert(req.NumRows(), Equals, 0)
 	rs.Close()
 }
 
@@ -2037,18 +2058,18 @@ func (s *testSchemaSuite) TestIndexLookUpReaderChunk(c *C) {
 	tk.Se.GetSessionVars().IndexLookupSize = 10
 	rs, err := tk.Exec("select * from chk order by k")
 	c.Assert(err, IsNil)
-	chk := rs.NewChunk()
+	req := rs.NewRecordBatch()
 	var count int
 	for {
-		err = rs.Next(context.TODO(), chk)
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
-		numRows := chk.NumRows()
+		numRows := req.NumRows()
 		if numRows == 0 {
 			break
 		}
 		for i := 0; i < numRows; i++ {
-			c.Assert(chk.GetRow(i).GetInt64(0), Equals, int64(count))
-			c.Assert(chk.GetRow(i).GetInt64(1), Equals, int64(count))
+			c.Assert(req.GetRow(i).GetInt64(0), Equals, int64(count))
+			c.Assert(req.GetRow(i).GetInt64(1), Equals, int64(count))
 			count++
 		}
 	}
@@ -2057,17 +2078,17 @@ func (s *testSchemaSuite) TestIndexLookUpReaderChunk(c *C) {
 
 	rs, err = tk.Exec("select k from chk where c < 90 order by k")
 	c.Assert(err, IsNil)
-	chk = rs.NewChunk()
+	req = rs.NewRecordBatch()
 	count = 0
 	for {
-		err = rs.Next(context.TODO(), chk)
+		err = rs.Next(context.TODO(), req)
 		c.Assert(err, IsNil)
-		numRows := chk.NumRows()
+		numRows := req.NumRows()
 		if numRows == 0 {
 			break
 		}
 		for i := 0; i < numRows; i++ {
-			c.Assert(chk.GetRow(i).GetInt64(0), Equals, int64(count))
+			c.Assert(req.GetRow(i).GetInt64(0), Equals, int64(count))
 			count++
 		}
 	}
@@ -2436,16 +2457,30 @@ func (s *testSessionSuite) TestUpdatePrivilege(c *C) {
 	// In fact, the privlege check for t1 should be update, and for t2 should be select.
 	_, err = tk1.Exec("update t1,t2 set t1.id = t2.id;")
 	c.Assert(err, IsNil)
+
+	// Fix issue 8911
+	tk.MustExec("create database weperk")
+	tk.MustExec("use weperk")
+	tk.MustExec("create table tb_wehub_server (id int, active_count int, used_count int)")
+	tk.MustExec("create user 'weperk'")
+	tk.MustExec("grant all privileges on weperk.* to 'weperk'@'%'")
+	c.Assert(tk1.Se.Auth(&auth.UserIdentity{Username: "weperk", Hostname: "%"},
+		[]byte(""), []byte("")), IsTrue)
+	tk1.MustExec("use weperk")
+	tk1.MustExec("update tb_wehub_server a set a.active_count=a.active_count+1,a.used_count=a.used_count+1 where id=1")
 }
 
 func (s *testSessionSuite) TestTxnGoString(c *C) {
 	tk := testkit.NewTestKitWithInit(c, s.store)
 	tk.MustExec("drop table if exists gostr;")
 	tk.MustExec("create table gostr (id int);")
-	str1 := fmt.Sprintf("%#v", tk.Se.Txn(false))
+	txn, err := tk.Se.Txn(false)
+	c.Assert(err, IsNil)
+	str1 := fmt.Sprintf("%#v", txn)
 	c.Assert(str1, Equals, "Txn{state=invalid}")
 	tk.MustExec("begin")
-	txn := tk.Se.Txn(false)
+	txn, err = tk.Se.Txn(false)
+	c.Assert(err, IsNil)
 	c.Assert(fmt.Sprintf("%#v", txn), Equals, fmt.Sprintf("Txn{state=valid, startTS=%d}", txn.StartTS()))
 
 	tk.MustExec("insert into gostr values (1)")

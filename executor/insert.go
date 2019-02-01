@@ -43,7 +43,11 @@ func (e *InsertExec) exec(ctx context.Context, rows [][]types.Datum) error {
 	ignoreErr := sessVars.StmtCtx.DupKeyAsWarning
 
 	if !sessVars.LightningMode {
-		sessVars.GetWriteStmtBufs().BufStore = kv.NewBufferStore(e.ctx.Txn(true), kv.TempTxnMemBufCap)
+		txn, err := e.ctx.Txn(true)
+		if err != nil {
+			return errors.Trace(err)
+		}
+		sessVars.GetWriteStmtBufs().BufStore = kv.NewBufferStore(txn, kv.TempTxnMemBufCap)
 	}
 
 	e.ctx.GetSessionVars().StmtCtx.AddRecordRows(uint64(len(rows)))
@@ -131,13 +135,13 @@ func (e *InsertExec) batchUpdateDupRows(newRows [][]types.Datum) error {
 }
 
 // Next implements the Executor Next interface.
-func (e *InsertExec) Next(ctx context.Context, chk *chunk.Chunk) error {
+func (e *InsertExec) Next(ctx context.Context, req *chunk.RecordBatch) error {
 	if span := opentracing.SpanFromContext(ctx); span != nil && span.Tracer() != nil {
 		span1 := span.Tracer().StartSpan("insert.Next", opentracing.ChildOf(span.Context()))
 		defer span1.Finish()
 	}
 
-	chk.Reset()
+	req.Reset()
 	if len(e.children) > 0 && e.children[0] != nil {
 		return e.insertRowsFromSelect(ctx, e.exec)
 	}

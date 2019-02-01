@@ -34,6 +34,7 @@ import (
 	"github.com/pingcap/tidb/util"
 	"github.com/pingcap/tidb/util/logutil"
 	"github.com/pingcap/tidb/util/mock"
+	"github.com/pingcap/tidb/util/testleak"
 	log "github.com/sirupsen/logrus"
 )
 
@@ -89,10 +90,6 @@ func (d *ddl) restartWorkers(ctx context.Context) {
 	}
 }
 
-// TestLeakCheckCnt is the check count in the package of ddl.
-// In this package CustomParallelSuiteFlag is true, so we need to increase check count.
-const TestLeakCheckCnt = 1000
-
 func TestT(t *testing.T) {
 	CustomVerboseFlag = true
 	*CustomParallelSuiteFlag = true
@@ -103,7 +100,10 @@ func TestT(t *testing.T) {
 	})
 	autoid.SetStep(5000)
 	ReorgWaitTimeout = 30 * time.Millisecond
+
+	testleak.BeforeTest()
 	TestingT(t)
+	testleak.AfterTestT(t)()
 }
 
 func testCreateStore(c *C, name string) kv.Storage {
@@ -126,7 +126,9 @@ func testNewDDL(ctx context.Context, etcdCli *clientv3.Client, store kv.Storage,
 func getSchemaVer(c *C, ctx sessionctx.Context) int64 {
 	err := ctx.NewTxn(context.Background())
 	c.Assert(err, IsNil)
-	m := meta.NewMeta(ctx.Txn(true))
+	txn, err := ctx.Txn(true)
+	c.Assert(err, IsNil)
+	m := meta.NewMeta(txn)
 	ver, err := m.GetSchemaVersion()
 	c.Assert(err, IsNil)
 	return ver
@@ -154,7 +156,9 @@ func checkHistoryJob(c *C, job *model.Job) {
 }
 
 func checkHistoryJobArgs(c *C, ctx sessionctx.Context, id int64, args *historyJobArgs) {
-	t := meta.NewMeta(ctx.Txn(true))
+	txn, err := ctx.Txn(true)
+	c.Assert(err, IsNil)
+	t := meta.NewMeta(txn)
 	historyJob, err := t.GetHistoryDDLJob(id)
 	c.Assert(err, IsNil)
 	c.Assert(historyJob.BinlogInfo.FinishedTS, Greater, uint64(0))
